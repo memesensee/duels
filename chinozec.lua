@@ -469,227 +469,229 @@ local rage_left = rage:AddLeftTabbox()
 local players_tab = rage_left:AddTab("Players")
 
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local Radius = 800
-local TeleportCooldown = 0.1
-
 local LocalPlayer = Players.LocalPlayer
-local activeConnections = {}  -- Для хранения подключений, чтобы отключать при тоггле off
-local lastTeleportTimes = {}  -- {Player = lastTime}
-local isEnabled = false
+local Mouse = LocalPlayer:GetMouse()
 
--- Функция для запуска эффекта от конкретного Tool
-local function startEffect(tool)
-    if not isEnabled then return end
-    
-    local character = tool.Parent
-    if not character or not character:IsA("Model") then return end
-    if Players:GetPlayerFromCharacter(character) ~= LocalPlayer then return end
-    
-    local handle = tool:FindFirstChild("Handle")
-    if not handle then return end
-    
-    -- Сбрасываем таймеры при экипировке
-    lastTeleportTimes = {}
-    
-    local effectConnection = RunService.Heartbeat:Connect(function()
-        if not isEnabled then return end  -- Проверяем каждый тик
-        
-        local rightHand = character:FindFirstChild("RightHand")
-        if not rightHand then return end
-        
-        local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-        if not humanoidRootPart then return end
-        
-        local gripCFrame = rightHand.CFrame * tool.Grip
-        local gripPosition = gripCFrame.Position
-        local direction = gripCFrame.LookVector
-        
-        local currentTime = tick()
-        
-        for _, otherPlayer in pairs(Players:GetPlayers()) do
-            if otherPlayer == LocalPlayer then continue end
-            
-            local otherCharacter = otherPlayer.Character
-            if not otherCharacter then continue end
-            
-            local otherRoot = otherCharacter:FindFirstChild("HumanoidRootPart")
-            if not otherRoot then continue end
-            
-            local distance = (otherRoot.Position - gripPosition).Magnitude
-            
-            if distance <= Radius then
-                local lastTime = lastTeleportTimes[otherPlayer] or 0
-                if currentTime - lastTime >= TeleportCooldown then
-                    otherRoot.CFrame = CFrame.lookAt(gripPosition, gripPosition + direction)
-                    
-                    -- Проверка на застревание (сразу после телепорта)
-                    local newDistance = (otherRoot.Position - gripPosition).Magnitude
-                    if newDistance > 10 then
-                        otherRoot.CFrame = CFrame.lookAt(gripPosition, gripPosition + direction)
-                    end
-                    
-                    lastTeleportTimes[otherPlayer] = currentTime
-                end
+-- Настройки (экстремальный спам для 5 раундов/сек)
+local AUTO_CLICK_DELAY = 0.001  -- Супер-спам кликов (миллисекунды)
+local AUTO_WIN_DELAY = 0.01     -- Авто-вин спам (выигрывает раунды за секунду)
+local MAX_TARGET_DIST = 2000    -- Больше дистанция для киллов
+local TOOL_EQUIP_DELAY = 0.2   -- Задержка экипировки первого тула (теперь синхронизировано с AUTO_WIN_DELAY)
+local SLASH_SPAM_COUNT = 5     -- Количество вызовов Slash за один спам (много раз!)
+
+-- Переменные (спам всегда вкл)
+local autoClickEnabled = true   -- ВСЕГДА ВКЛ!
+local autoWinEnabled = false    -- Авто-вин изначально выкл, управляется тогглом
+local autoToolGrabEnabled = true -- ВКЛ для лупа граба тула с Slash
+local autoEquipFirstToolEnabled = true  -- Луп экипировки только первого тула с Slash
+local killRemote = nil
+local slashStartRemote = nil
+
+-- Поиск kill remote (работает с любым Tool, если есть Slash и SlashStart)
+local function getKillRemote()
+    local tool = nil
+    -- Из Backpack
+    for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
+        if item:IsA("Tool") and item:FindFirstChild("Slash") then
+            tool = item
+            break
+        end
+    end
+    -- Из Character, если не нашли
+    if not tool and LocalPlayer.Character then
+        for _, item in pairs(LocalPlayer.Character:GetChildren()) do
+            if item:IsA("Tool") and item:FindFirstChild("Slash") then
+                tool = item
+                break
             end
         end
-    end)
-    
-    activeConnections[tool] = effectConnection
+    end
+    killRemote = tool and tool:FindFirstChild("Slash")
+    slashStartRemote = tool and tool:FindFirstChild("SlashStart")
+    return killRemote
 end
 
--- Функция для остановки эффекта от Tool
-local function stopEffect(tool)
-    local connection = activeConnections[tool]
-    if connection then
-        connection:Disconnect()
-        activeConnections[tool] = nil
+-- Экипировка только первого тула (любой Tool с Slash, слот 1)
+local function equipFirstTool()
+    if not LocalPlayer.Character then return end
+    
+    -- Убираем текущий тул, если есть
+    for _, tool in pairs(LocalPlayer.Character:GetChildren()) do
+        if tool:IsA("Tool") then
+            tool.Parent = LocalPlayer.Backpack
+        end
     end
     
-    -- Отпускание игроков (если инструмент еще в руках)
-    local character = tool.Parent
-    if character and character:IsA("Model") and isEnabled then  -- Только если enabled, но на самом деле для отпускания всегда
-        local rightHand = character:FindFirstChild("RightHand")
-        if rightHand then
-            local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-            if humanoidRootPart then
-                local gripCFrame = rightHand.CFrame * tool.Grip
-                local gripPosition = gripCFrame.Position
-                local direction = gripCFrame.LookVector
-                
-                for _, otherPlayer in pairs(Players:GetPlayers()) do
-                    if otherPlayer == LocalPlayer then continue end
-                    
-                    local otherCharacter = otherPlayer.Character
-                    if not otherCharacter then continue end
-                    
-                    local otherRoot = otherCharacter:FindFirstChild("HumanoidRootPart")
-                    if not otherRoot then continue end
-                    
-                    local distance = (otherRoot.Position - gripPosition).Magnitude
-                    if distance <= Radius + 50 then
-                        local offset = otherRoot.Position - gripPosition
-                        local dist = offset.Magnitude
-                        local releasePosition
-                        if dist > 1 then
-                            releasePosition = otherRoot.Position + offset.Unit * 20
-                        else
-                            releasePosition = gripPosition + direction * -20
-                        end
-                        otherRoot.CFrame = CFrame.lookAt(releasePosition, releasePosition + direction)
-                    end
+    -- Экипируем только первый Tool с Slash (всегда первый слот)
+    local firstToolWithSlash = nil
+    for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
+        if item:IsA("Tool") and item:FindFirstChild("Slash") then
+            firstToolWithSlash = item
+            break
+        end
+    end
+    if firstToolWithSlash then
+        firstToolWithSlash.Parent = LocalPlayer.Character
+    end
+end
+
+-- Получение игры
+local function getRunningGame(player)
+    for _, gameFolder in pairs(workspace:WaitForChild("RunningGames"):GetChildren()) do
+        if gameFolder.Name:match(tostring(player.UserId)) then
+            return gameFolder
+        end
+    end
+    return nil
+end
+
+-- Найти ближайшего врага
+local function findClosestEnemy()
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil end
+    local myPos = LocalPlayer.Character.HumanoidRootPart.Position
+    local closestEnemy = nil
+    local closestDist = MAX_TARGET_DIST
+    
+    local myGame = LocalPlayer:GetAttribute("Game") or "nothing"
+    local myTeam = LocalPlayer:GetAttribute("Team") or "nothing"
+    local myMap = LocalPlayer:GetAttribute("Map") or "nothing"
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local theirGame = player:GetAttribute("Game") or "nothing"
+            local theirTeam = player:GetAttribute("Team") or "nothing"
+            local theirMap = player:GetAttribute("Map") or "nothing"
+            
+            if theirGame == myGame and theirMap == myMap and theirTeam ~= myTeam then
+                local dist = (player.Character.HumanoidRootPart.Position - myPos).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closestEnemy = player
                 end
             end
         end
     end
+    return closestEnemy
 end
 
--- Функция для подключения мониторинга Tools персонажа
-local function connectCharacterMonitoring(character)
-    -- Отключаем старые, если есть
-    for tool, conn in pairs(activeConnections) do
-        if tool.Parent == character then
-            stopEffect(tool)
-        end
-    end
+-- Авто-Клик (спам kill на таргет, много раз Slash и SlashStart)
+local function performAutoClick()
+    if not getKillRemote() then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
     
-    -- Новые подключения
-    local childAddedConn = character.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") and isEnabled then
-            child.Equipped:Connect(function()
-                startEffect(child)
-            end)
-            child.Unequipped:Connect(function()
-                stopEffect(child)
-            end)
-        end
-    end)
-    
-    -- ChildRemoved для очистки
-    local childRemovedConn = character.ChildRemoved:Connect(function(child)
-        if child:IsA("Tool") then
-            stopEffect(child)
-        end
-    end)
-    
-    -- Уже существующие Tools
-    for _, child in pairs(character:GetChildren()) do
-        if child:IsA("Tool") and isEnabled then
-            child.Equipped:Connect(function()
-                startEffect(child)
-            end)
-            child.Unequipped:Connect(function()
-                stopEffect(child)
-            end)
-            if child.Parent == character then  -- Уже equipped
-                startEffect(child)
+    local target = findClosestEnemy()
+    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+        local direction = (target.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Unit
+        -- Много раз вызываем SlashStart, если существует
+        if slashStartRemote then
+            for i = 1, SLASH_SPAM_COUNT do
+                slashStartRemote:FireServer(target, direction)
             end
         end
-    end
-    
-    -- Сохраняем подключения мониторинга
-    activeConnections[character] = {childAdded = childAddedConn, childRemoved = childRemovedConn}
-end
-
--- Функция для отключения мониторинга персонажа
-local function disconnectCharacterMonitoring(character)
-    local monitoring = activeConnections[character]
-    if monitoring then
-        if monitoring.childAdded then monitoring.childAdded:Disconnect() end
-        if monitoring.childRemoved then monitoring.childRemoved:Disconnect() end
-        activeConnections[character] = nil
-    end
-    
-    -- Останавливаем все эффекты для Tools в этом персонаже
-    for tool, _ in pairs(activeConnections) do
-        if tool.Parent == character and tool:IsA("Tool") then
-            stopEffect(tool)
+        -- Много раз вызываем Slash
+        for i = 1, SLASH_SPAM_COUNT do
+            killRemote:FireServer(target, direction)
         end
-    end
-end
-
--- Основная функция для старта/стопа всего
-local function toggleTpPlayers(value)
-    isEnabled = value
-    lastTeleportTimes = {}
-    
-    if value then
-        -- Подключаем мониторинг для текущего персонажа
-        if LocalPlayer.Character then
-            connectCharacterMonitoring(LocalPlayer.Character)
-        end
-        -- И для будущих респавнов
-        local charAddedConn = LocalPlayer.CharacterAdded:Connect(function(character)
-            wait(1)  -- Ждем загрузки
-            connectCharacterMonitoring(character)
-        end)
-        activeConnections["charAdded"] = charAddedConn
     else
-        -- Отключаем все
-        if LocalPlayer.Character then
-            disconnectCharacterMonitoring(LocalPlayer.Character)
-        end
-        local charAdded = activeConnections["charAdded"]
-        if charAdded then
-            charAdded:Disconnect()
-            activeConnections["charAdded"] = nil
-        end
-        -- Останавливаем все активные эффекты
-        for tool, _ in pairs(activeConnections) do
-            if tool:IsA("Tool") then
-                stopEffect(tool)
+        -- Если нет таргета, спамим fire для дамага много раз
+        local fireRemote = killRemote.Parent:FindFirstChild("Slash")
+        if fireRemote then
+            for i = 1, SLASH_SPAM_COUNT do
+                fireRemote:FireServer()
             end
         end
-        activeConnections = {}
     end
 end
 
--- Теперь интегрируем в твой GUI
-players_tab:AddToggle('tpplayers', {
-    Text = 'tp players', 
+-- Авто-Вин (экстремальный килл всех + телепорт к тебе + экипировка тула + много Slash и SlashStart — 5+ раундов/сек)
+local function autoWinLoop()
+    if autoEquipFirstToolEnabled then
+        equipFirstTool()  -- Экипируем тул синхронно с телепортом (каждые 0.01 сек)
+    end
+    
+    if not getKillRemote() then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local myGame = LocalPlayer:GetAttribute("Game") or "nothing"
+    local myTeam = LocalPlayer:GetAttribute("Team") or "nothing"
+    local myMap = LocalPlayer:GetAttribute("Map") or "nothing"
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local theirGame = player:GetAttribute("Game") or "nothing"
+            local theirTeam = player:GetAttribute("Team") or "nothing"
+            local theirMap = player:GetAttribute("Map") or "nothing"
+            
+            if theirGame == myGame and theirMap == myMap and theirTeam ~= myTeam then
+                local direction = (player.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Unit
+                -- Много раз вызываем SlashStart на каждого врага, если существует
+                if slashStartRemote then
+                    for i = 1, SLASH_SPAM_COUNT do
+                        slashStartRemote:FireServer(player, direction)
+                    end
+                end
+                -- Много раз вызываем Slash на каждого врага
+                for i = 1, SLASH_SPAM_COUNT do
+                    killRemote:FireServer(player, direction)
+                end
+                
+                -- Телепорт врага к тебе (перед тобой на 2 studs)
+                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    player.Character.HumanoidRootPart.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -2)
+                end
+            end
+        end
+    end
+end
+
+-- Луп авто-кликера (всегда вкл, супер-спам)
+local clickConnection
+local function startAutoClick()
+    if clickConnection then clickConnection:Disconnect() end
+    clickConnection = RunService.Heartbeat:Connect(function()
+        if autoClickEnabled then
+            performAutoClick()
+        end
+    end)
+end
+
+-- Луп авто-вина (экстремальный спам для быстрого выигрыша раундов, теперь с экипировкой)
+spawn(function()
+    while true do
+        if autoWinEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character.Humanoid.Health > 0 then
+            local runningGame = getRunningGame(LocalPlayer)
+            if runningGame and runningGame:FindFirstChild("RoundStarted") and runningGame.RoundStarted.Value == true then
+                autoWinLoop()  -- Спамит всех + телепорт + экипировка + много Slash каждые 0.01 сек — 5+ раундов за секунду!
+            end
+        end
+        wait(AUTO_WIN_DELAY)
+    end
+end)
+
+-- Луп граба тула с Slash (если вкл)
+spawn(function()
+    while true do
+        if autoToolGrabEnabled then
+            getKillRemote()
+        end
+        wait(1)  -- Проверяем каждую секунду
+    end
+end)
+
+-- Удален отдельный луп экипировки (теперь интегрирован в autoWinLoop для синхронизации)
+
+-- Инициализация
+getKillRemote()
+startAutoClick()
+
+-- Тоггл для kill all (управляет autoWinEnabled)
+players_tab:AddToggle('killall', { 
+    Text = 'auto win', 
     Default = false,
     Callback = function(Value)
-        toggleTpPlayers(Value)
+        autoWinEnabled = Value
     end
 })
 
