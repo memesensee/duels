@@ -1,4 +1,3 @@
--- init
 if not game:IsLoaded() then 
     game.Loaded:Wait()
 end
@@ -30,8 +29,7 @@ local SilentAimSettings = {
     AutoshotDelay = 50
 }
 
--- variables
-getgenv().SilentAimSettings = Settings
+getgenv().SilentAimSettings = SilentAimSettings
 local MainFileName = "UniversalSilentAim"
 local SelectedFile, FileToSave = "", ""
 
@@ -61,23 +59,126 @@ local create = coroutine.create
 local ValidTargetParts = {"Head", "HumanoidRootPart"}
 local PredictionAmount = 0.165
 
-local mouse_box = Drawing.new("Square")
-mouse_box.Visible = true 
-mouse_box.ZIndex = 999 
-mouse_box.Color = Color3.fromRGB(54, 57, 241)
-mouse_box.Thickness = 20 
-mouse_box.Size = Vector2.new(20, 20)
-mouse_box.Filled = true 
+-- Attribute-based team helpers for Team Check
+local function getTeamAttr(p)
+	if not p then return nil end
+	return p:GetAttribute("Team")
+end
 
-local fov_circle = Drawing.new("Circle")
-fov_circle.Thickness = 1
-fov_circle.NumSides = 100
-fov_circle.Radius = 180
-fov_circle.Filled = false
-fov_circle.Visible = false
-fov_circle.ZIndex = 999
-fov_circle.Transparency = 1
-fov_circle.Color = Color3.fromRGB(54, 57, 241)
+local function isEnemyAttr(p)
+	local myTeam = getTeamAttr(LocalPlayer)
+	local theirTeam = getTeamAttr(p)
+	if not myTeam or not theirTeam then return false end
+	return myTeam ~= theirTeam
+end
+
+-- FOV circles: separate fill and outline for independent colors
+local fov_circle_fill = Drawing.new("Circle")
+fov_circle_fill.Thickness = 1
+fov_circle_fill.NumSides = 100
+fov_circle_fill.Radius = 180
+fov_circle_fill.Filled = true
+fov_circle_fill.Visible = false
+fov_circle_fill.ZIndex = 998
+fov_circle_fill.Transparency = 0.15
+fov_circle_fill.Color = Color3.fromRGB(54, 57, 241)
+
+local fov_circle_outline = Drawing.new("Circle")
+fov_circle_outline.Thickness = 1
+fov_circle_outline.NumSides = 100
+fov_circle_outline.Radius = 180
+fov_circle_outline.Filled = false
+fov_circle_outline.Visible = false
+fov_circle_outline.ZIndex = 999
+fov_circle_outline.Transparency = 1
+fov_circle_outline.Color = Color3.fromRGB(54, 57, 241)
+
+-- Crosshair removed as requested
+
+-- Target info UI (nickname, avatar, HP) below the center
+local TargetGui, AvatarImage, NameLabel, HpLabel
+local lastAvatarUserId
+local lastTargetUserId
+local lastHpShown
+local function ensureTargetGui()
+	if TargetGui and TargetGui.Parent then return end
+	TargetGui = Instance.new("ScreenGui")
+	TargetGui.Name = "chinozec_TargetInfo"
+	protectgui(TargetGui)
+	TargetGui.Parent = game:GetService("CoreGui")
+
+    local holder = Instance.new("Frame")
+	holder.Name = "Holder"
+	holder.BackgroundTransparency = 0.2
+	holder.BackgroundColor3 = Color3.fromRGB(10,10,10)
+	holder.BorderSizePixel = 0
+	holder.Size = UDim2.fromOffset(240, 72)
+	holder.AnchorPoint = Vector2.new(0.5, 0)
+    holder.Position = UDim2.new(0.5, 0, 0.5, 100)
+	holder.Parent = TargetGui
+    local holderCorner = Instance.new("UICorner")
+    holderCorner.CornerRadius = UDim.new(0, 10)
+    holderCorner.Parent = holder
+
+    AvatarImage = Instance.new("ImageLabel")
+	AvatarImage.BackgroundTransparency = 1
+	AvatarImage.Size = UDim2.fromOffset(64,64)
+	AvatarImage.Position = UDim2.fromOffset(6,4)
+	AvatarImage.Parent = holder
+    local avatarCorner = Instance.new("UICorner")
+    avatarCorner.CornerRadius = UDim.new(1, 0)
+    avatarCorner.Parent = AvatarImage
+
+	NameLabel = Instance.new("TextLabel")
+	NameLabel.BackgroundTransparency = 1
+	NameLabel.Font = Enum.Font.GothamBold
+	NameLabel.TextSize = 16
+	NameLabel.TextColor3 = Color3.new(1,1,1)
+	NameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	NameLabel.Size = UDim2.fromOffset(160, 22)
+	NameLabel.Position = UDim2.fromOffset(78, 6)
+	NameLabel.Parent = holder
+
+	HpLabel = Instance.new("TextLabel")
+	HpLabel.BackgroundTransparency = 1
+	HpLabel.Font = Enum.Font.Gotham
+	HpLabel.TextSize = 14
+	HpLabel.TextColor3 = Color3.fromRGB(200,200,200)
+	HpLabel.TextXAlignment = Enum.TextXAlignment.Left
+	HpLabel.Size = UDim2.fromOffset(160, 20)
+	HpLabel.Position = UDim2.fromOffset(78, 32)
+	HpLabel.Parent = holder
+
+    TargetGui.Enabled = false
+end
+
+local function updateTargetGui(player, humanoid)
+	ensureTargetGui()
+	if not player then
+		TargetGui.Enabled = false
+        lastTargetUserId = nil
+        lastHpShown = nil
+		return
+	end
+	TargetGui.Enabled = true
+    if player.UserId ~= lastTargetUserId then
+        NameLabel.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+        lastTargetUserId = player.UserId
+    end
+    local hpNow = humanoid and math.floor(humanoid.Health) or nil
+    if hpNow ~= lastHpShown then
+        HpLabel.Text = hpNow and ("HP: " .. tostring(hpNow)) or "HP: ?"
+        lastHpShown = hpNow
+    end
+	if player.UserId ~= lastAvatarUserId then
+		lastAvatarUserId = player.UserId
+		local ok, content = pcall(function()
+			return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+		end)
+		if ok then AvatarImage.Image = content end
+	end
+end
+
 
 local ExpectedArguments = {
     FindPartOnRayWithIgnoreList = {
@@ -107,18 +208,15 @@ local ExpectedArguments = {
 }
 
 function CalculateChance(Percentage)
-    -- // Floor the percentage
     Percentage = math.floor(Percentage)
 
-    -- // Get the chance
     local chance = math.floor(Random.new().NextNumber(Random.new(), 0, 1) * 100) / 100
 
-    -- // Return
     return chance <= Percentage / 100
 end
 
 
---[[file handling]] do 
+ do 
     if not isfolder(MainFileName) then 
         makefolder(MainFileName);
     end
@@ -130,13 +228,11 @@ end
 
 local Files = listfiles(string.format("%s/%s", "UniversalSilentAim", tostring(game.PlaceId)))
 
--- functions
 local function GetFiles() -- credits to the linoria lib for this function, listfiles returns the files full path and its annoying
 	local out = {}
 	for i = 1, #Files do
 		local file = Files[i]
 		if file:sub(-4) == '.lua' then
-			-- i hate this but it has to be done ...
 
 			local pos = file:find('.lua', 1, true)
 			local start = pos
@@ -219,7 +315,7 @@ local function getClosestPlayer()
     local DistanceToMouse
     for _, Player in next, GetPlayers(Players) do
         if Player == LocalPlayer then continue end
-        if Toggles.TeamCheck.Value and Player.Team == LocalPlayer.Team then continue end
+		if Toggles.TeamCheck.Value and not isEnemyAttr(Player) then continue end
 
         local Character = Player.Character
         if not Character then continue end
@@ -259,8 +355,6 @@ local MainBOX = GeneralTab:AddLeftTabbox("Main") do
     
     Toggles.aim_Enabled.Value = SilentAimSettings.Enabled
     Toggles.aim_Enabled:SetValue(SilentAimSettings.Enabled)
-    
-    mouse_box.Visible = SilentAimSettings.Enabled
 
     Library:Notify(SilentAimSettings.Enabled and 'Enable aim' or 'Disable aim')
 end)
@@ -282,14 +376,6 @@ end)
     Main:AddDropdown("TargetPart", {AllowNull = true, Text = "Target Part", Default = SilentAimSettings.TargetPart, Values = {"Head", "HumanoidRootPart", "Random"}}):OnChanged(function()
         SilentAimSettings.TargetPart = Options.TargetPart.Value
     end)
-    Main:AddDropdown("Method", {AllowNull = true, Text = "Silent Aim Method", Default = SilentAimSettings.SilentAimMethod, Values = {
-        "Raycast","FindPartOnRay",
-        "FindPartOnRayWithWhitelist",
-        "FindPartOnRayWithIgnoreList",
-        "Mouse.Hit/Target"
-    }}):OnChanged(function() 
-        SilentAimSettings.SilentAimMethod = Options.Method.Value 
-    end)
     Main:AddSlider('HitChance', {
         Text = 'Hit chance',
         Default = 100,
@@ -305,21 +391,37 @@ end)
 end
 
 local MiscellaneousBOX = GeneralTab:AddLeftTabbox("Miscellaneous")
-local FieldOfViewBOX = GeneralTab:AddLeftTabbox("Field Of View") do
+local FieldOfViewBOX = GeneralTab:AddRightTabbox("Field Of View") do
     local Main = FieldOfViewBOX:AddTab("")
     
-    Main:AddToggle("Visible", {Text = "Show FOV Circle"}):AddColorPicker("Color", {Default = Color3.fromRGB(54, 57, 241)}):OnChanged(function()
-        fov_circle.Visible = Toggles.Visible.Value
-        SilentAimSettings.FOVVisible = Toggles.Visible.Value
-    end)
-    Main:AddSlider("Radius", {Text = "FOV Circle Radius", Min = 0, Max = 360, Default = 130, Rounding = 0}):OnChanged(function()
-        fov_circle.Radius = Options.Radius.Value
-        SilentAimSettings.FOVRadius = Options.Radius.Value
-    end)
-    Main:AddToggle("MousePosition", {Text = "Show Silent Aim Target"}):AddColorPicker("MouseVisualizeColor", {Default = Color3.fromRGB(54, 57, 241)}):OnChanged(function()
-        mouse_box.Visible = Toggles.MousePosition.Value 
-        SilentAimSettings.ShowSilentAimTarget = Toggles.MousePosition.Value 
-    end)
+	Main:AddToggle("Visible", {Text = "Show FOV Circle"})
+		:AddColorPicker("FOVFillColor", {Default = Color3.fromRGB(54, 57, 241)})
+		:AddColorPicker("FOVOutlineColor", {Default = Color3.fromRGB(54, 57, 241)})
+		:OnChanged(function()
+			local vis = Toggles.Visible.Value
+			fov_circle_fill.Visible = vis
+			fov_circle_outline.Visible = vis
+			SilentAimSettings.FOVVisible = vis
+		end)
+
+	Main:AddSlider("Radius", {Text = "FOV Circle Radius", Min = 0, Max = 360, Default = 130, Rounding = 0}):OnChanged(function()
+		fov_circle_fill.Radius = Options.Radius.Value
+		fov_circle_outline.Radius = Options.Radius.Value
+		SilentAimSettings.FOVRadius = Options.Radius.Value
+	end)
+
+	Main:AddSlider("FOVOutlineThickness", {Text = "Outline Thickness", Min = 1, Max = 6, Default = 1, Rounding = 0}):OnChanged(function()
+		fov_circle_outline.Thickness = Options.FOVOutlineThickness.Value
+	end)
+
+	Main:AddSlider("FOVFillAlpha", {Text = "Fill Alpha", Min = 0, Max = 1, Default = 0.15, Rounding = 2}):OnChanged(function()
+		fov_circle_fill.Transparency = Options.FOVFillAlpha.Value
+	end)
+    Main:AddToggle("MousePosition", {Text = "Show Silent Aim Target"})
+		:AddColorPicker("MouseVisualizeColor", {Default = Color3.fromRGB(54, 57, 241)})
+		:OnChanged(function()
+			SilentAimSettings.ShowSilentAimTarget = Toggles.MousePosition.Value 
+		end)
     local PredictionTab = MiscellaneousBOX:AddTab("Prediction")
     PredictionTab:AddToggle("Prediction", {Text = "Mouse.Hit/Target Prediction"}):OnChanged(function()
         SilentAimSettings.MouseHitPrediction = Toggles.Prediction.Value
@@ -332,24 +434,31 @@ end
 
 resume(create(function()
     RenderStepped:Connect(function()
+        -- Target info without circle indicator (cached updates to avoid FPS drops)
         if Toggles.MousePosition.Value and Toggles.aim_Enabled.Value then
-            if getClosestPlayer() then 
-                local Root = getClosestPlayer().Parent.PrimaryPart or getClosestPlayer()
-                local RootToViewportPoint, IsOnScreen = WorldToViewportPoint(Camera, Root.Position);
-                -- using PrimaryPart instead because if your Target Part is "Random" it will flicker the square between the Target's Head and HumanoidRootPart (its annoying)
-                
-                mouse_box.Visible = IsOnScreen
-                mouse_box.Position = Vector2.new(RootToViewportPoint.X, RootToViewportPoint.Y)
-            else 
-                mouse_box.Visible = false 
-                mouse_box.Position = Vector2.new()
+            local part = getClosestPlayer()
+            if part and part.Parent then
+                local targetPlayer = Players:GetPlayerFromCharacter(part.Parent)
+                local hum = targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChildOfClass("Humanoid")
+                updateTargetGui(targetPlayer, hum)
+            else
+                updateTargetGui(nil, nil)
             end
         end
         
-        if Toggles.Visible.Value then 
-            fov_circle.Visible = Toggles.Visible.Value
-            fov_circle.Color = Options.Color.Value
-            fov_circle.Position = getMousePosition()
+		-- FOV draw
+		local mousePos = getMousePosition()
+		if Toggles.Visible.Value then 
+			fov_circle_fill.Visible = true
+			fov_circle_outline.Visible = true
+			fov_circle_fill.Position = mousePos
+			fov_circle_outline.Position = mousePos
+			if Options.FOVFillColor and Options.FOVFillColor.Value then
+				fov_circle_fill.Color = Options.FOVFillColor.Value
+			end
+			if Options.FOVOutlineColor and Options.FOVOutlineColor.Value then
+				fov_circle_outline.Color = Options.FOVOutlineColor.Value
+			end
         end
     end)
 end))
@@ -359,16 +468,25 @@ local lastShot = 0
 
 Toggles.Autoshot:OnChanged(function()
     if Toggles.Autoshot.Value then
-        autoshotConnection = RunService.Heartbeat:Connect(function()
-            if not Toggles.aim_Enabled.Value then return end
-            local Closest = getClosestPlayer()
-            if Closest and tick() - lastShot >= (SilentAimSettings.AutoshotDelay / 1000 + 0.01) then
-                mouse1press()
-                task.wait(0.01)  -- Время "hold" клика, можно увеличить до 0.05 если не работает
-                mouse1release()
-                lastShot = tick()
-            end
-        end)
+		autoshotConnection = RunService.Heartbeat:Connect(function()
+			if not Toggles.aim_Enabled.Value then return end
+			local part = getClosestPlayer()
+			if not part then return end
+			-- On-screen and within current FOV radius
+			local sp, onScr = WorldToViewportPoint(Camera, part.Position)
+			if not onScr then return end
+			local distToMouse = (getMousePosition() - Vector2.new(sp.X, sp.Y)).Magnitude
+			local maxR = Options.Radius and Options.Radius.Value or 130
+			if distToMouse > maxR then return end
+			-- hitchance roll
+			if not CalculateChance(SilentAimSettings.HitChance or 100) then return end
+			-- cooldown
+			if tick() - lastShot < (SilentAimSettings.AutoshotDelay / 1000 + 0.005) then return end
+			mouse1press()
+			task.wait(0.02)
+			mouse1release()
+			lastShot = tick()
+		end)
     else
         if autoshotConnection then
             autoshotConnection:Disconnect()
@@ -377,72 +495,11 @@ Toggles.Autoshot:OnChanged(function()
     end
 end)
 
--- hooks
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
-    local Method = getnamecallmethod()
-    local Arguments = {...}
-    local self = Arguments[1]
-    local chance = CalculateChance(SilentAimSettings.HitChance)
-    if Toggles.aim_Enabled.Value and self == workspace and not checkcaller() and chance == true then
-        if Method == "FindPartOnRayWithIgnoreList" and Options.Method.Value == Method then
-            if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithIgnoreList) then
-                local A_Ray = Arguments[2]
-
-                local HitPart = getClosestPlayer()
-                if HitPart then
-                    local Origin = A_Ray.Origin
-                    local Direction = getDirection(Origin, HitPart.Position)
-                    Arguments[2] = Ray.new(Origin, Direction)
-
-                    return oldNamecall(unpack(Arguments))
-                end
-            end
-        elseif Method == "FindPartOnRayWithWhitelist" and Options.Method.Value == Method then
-            if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithWhitelist) then
-                local A_Ray = Arguments[2]
-
-                local HitPart = getClosestPlayer()
-                if HitPart then
-                    local Origin = A_Ray.Origin
-                    local Direction = getDirection(Origin, HitPart.Position)
-                    Arguments[2] = Ray.new(Origin, Direction)
-
-                    return oldNamecall(unpack(Arguments))
-                end
-            end
-        elseif (Method == "FindPartOnRay" or Method == "findPartOnRay") and Options.Method.Value:lower() == Method:lower() then
-            if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRay) then
-                local A_Ray = Arguments[2]
-
-                local HitPart = getClosestPlayer()
-                if HitPart then
-                    local Origin = A_Ray.Origin
-                    local Direction = getDirection(Origin, HitPart.Position)
-                    Arguments[2] = Ray.new(Origin, Direction)
-
-                    return oldNamecall(unpack(Arguments))
-                end
-            end
-        elseif Method == "Raycast" and Options.Method.Value == Method then
-            if ValidateArguments(Arguments, ExpectedArguments.Raycast) then
-                local A_Origin = Arguments[2]
-
-                local HitPart = getClosestPlayer()
-                if HitPart then
-                    Arguments[3] = getDirection(A_Origin, HitPart.Position)
-
-                    return oldNamecall(unpack(Arguments))
-                end
-            end
-        end
-    end
-    return oldNamecall(...)
-end))
+-- Removed __namecall hook - using Mouse.Hit/Target only
 
 local oldIndex = nil 
 oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
-    if self == Mouse and not checkcaller() and Toggles.aim_Enabled.Value and Options.Method.Value == "Mouse.Hit/Target" and getClosestPlayer() then
+    if self == Mouse and not checkcaller() and Toggles.aim_Enabled.Value and getClosestPlayer() then
         local HitPart = getClosestPlayer()
          
         if Index == "Target" or Index == "target" then 
@@ -463,81 +520,70 @@ end))
 
 local rage = Window:AddTab("Rage")
 
--- Левый Tabbox (исправлено на левый, так как используется AddLeftTabbox)
 local rage_left = rage:AddLeftTabbox()
 
 local players_tab = rage_left:AddTab("Players")
 
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
+-- reuse top-level Players
+-- reuse top-level UserInputService
+-- reuse top-level RunService
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 
--- Настройки (экстремальный спам для 5 раундов/сек)
 local AUTO_CLICK_DELAY = 0.001  -- Супер-спам кликов (миллисекунды)
-local AUTO_WIN_DELAY = 0.01     -- Авто-вин спам (выигрывает раунды за секунду)
-local MAX_TARGET_DIST = 2000    -- Больше дистанция для киллов
-local TOOL_EQUIP_DELAY = 0.2   -- Задержка экипировки первого тула (теперь синхронизировано с AUTO_WIN_DELAY)
-local SLASH_SPAM_COUNT = 5     -- Количество вызовов Slash за один спам (много раз!)
+local AUTO_WIN_DELAY = 0.001    -- Авто-вин спам (еще быстрее, 1000 раз/сек)
+local MAX_TARGET_DIST = math.huge  -- Бесконечная дистанция для киллов через всю карту
+local TOOL_EQUIP_DELAY = 0.2   -- Задержка экипировки (НЕ ИСПОЛЬЗУЕТСЯ)
+local SLASH_SPAM_COUNT = 1     -- Количество вызовов kill за один тик на каждого (мгновенно, но не переспам)
+local ENEMY_CACHE_TIME = 0.1   -- Кэш врагов каждые 0.1 сек для оптимизации
 
--- Переменные (спам всегда вкл)
-local autoClickEnabled = true   -- ВСЕГДА ВКЛ!
-local autoWinEnabled = false    -- Авто-вин изначально выкл, управляется тогглом
-local autoToolGrabEnabled = true -- ВКЛ для лупа граба тула с Slash
-local autoEquipFirstToolEnabled = true  -- Луп экипировки только первого тула с Slash
+local autoClickEnabled = false   -- Изначально ВЫКЛ, управляется тогглом
+local autoWinEnabled = false     -- Изначально ВЫКЛ, управляется тогглом
+local autoToolGrabEnabled = true -- ВКЛ для лупа поиска тула с kill
+local autoEquipFirstToolEnabled = false  -- ВЫКЛ! НИЧЕГО НЕ ЭКИПИРУЕТСЯ В РУКИ
 local killRemote = nil
-local slashStartRemote = nil
+local enemyCache = {}
+local lastCacheUpdate = 0
+local clickConnection = nil  -- Для отключения Heartbeat
 
--- Поиск kill remote (работает с любым Tool, если есть Slash и SlashStart)
 local function getKillRemote()
     local tool = nil
-    -- Из Backpack
     for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-        if item:IsA("Tool") and item:FindFirstChild("Slash") then
+        if item:IsA("Tool") and item:FindFirstChild("kill") and item.kill:IsA("RemoteEvent") then
             tool = item
             break
         end
     end
-    -- Из Character, если не нашли
     if not tool and LocalPlayer.Character then
         for _, item in pairs(LocalPlayer.Character:GetChildren()) do
-            if item:IsA("Tool") and item:FindFirstChild("Slash") then
+            if item:IsA("Tool") and item:FindFirstChild("kill") and item.kill:IsA("RemoteEvent") then
                 tool = item
                 break
             end
         end
     end
-    killRemote = tool and tool:FindFirstChild("Slash")
-    slashStartRemote = tool and tool:FindFirstChild("SlashStart")
+    if not tool then
+        for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if item:IsA("Tool") and item:FindFirstChild("Slash") then
+                tool = item
+                break
+            end
+        end
+        if not tool and LocalPlayer.Character then
+            for _, item in pairs(LocalPlayer.Character:GetChildren()) do
+                if item:IsA("Tool") and item:FindFirstChild("Slash") then
+                    tool = item
+                    break
+                end
+            end
+        end
+    end
+    killRemote = tool and tool:FindFirstChild("kill") or tool and tool:FindFirstChild("Slash")
+    if killRemote then
+    end
     return killRemote
 end
 
--- Экипировка только первого тула (любой Tool с Slash, слот 1)
-local function equipFirstTool()
-    if not LocalPlayer.Character then return end
-    
-    -- Убираем текущий тул, если есть
-    for _, tool in pairs(LocalPlayer.Character:GetChildren()) do
-        if tool:IsA("Tool") then
-            tool.Parent = LocalPlayer.Backpack
-        end
-    end
-    
-    -- Экипируем только первый Tool с Slash (всегда первый слот)
-    local firstToolWithSlash = nil
-    for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-        if item:IsA("Tool") and item:FindFirstChild("Slash") then
-            firstToolWithSlash = item
-            break
-        end
-    end
-    if firstToolWithSlash then
-        firstToolWithSlash.Parent = LocalPlayer.Character
-    end
-end
-
--- Получение игры
 local function getRunningGame(player)
     for _, gameFolder in pairs(workspace:WaitForChild("RunningGames"):GetChildren()) do
         if gameFolder.Name:match(tostring(player.UserId)) then
@@ -547,72 +593,15 @@ local function getRunningGame(player)
     return nil
 end
 
--- Найти ближайшего врага
-local function findClosestEnemy()
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil end
-    local myPos = LocalPlayer.Character.HumanoidRootPart.Position
-    local closestEnemy = nil
-    local closestDist = MAX_TARGET_DIST
-    
-    local myGame = LocalPlayer:GetAttribute("Game") or "nothing"
-    local myTeam = LocalPlayer:GetAttribute("Team") or "nothing"
-    local myMap = LocalPlayer:GetAttribute("Map") or "nothing"
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local theirGame = player:GetAttribute("Game") or "nothing"
-            local theirTeam = player:GetAttribute("Team") or "nothing"
-            local theirMap = player:GetAttribute("Map") or "nothing"
-            
-            if theirGame == myGame and theirMap == myMap and theirTeam ~= myTeam then
-                local dist = (player.Character.HumanoidRootPart.Position - myPos).Magnitude
-                if dist < closestDist then
-                    closestDist = dist
-                    closestEnemy = player
-                end
-            end
-        end
+local function getAllEnemies()
+    local currentTime = tick()
+    if currentTime - lastCacheUpdate < ENEMY_CACHE_TIME then
+        return enemyCache
     end
-    return closestEnemy
-end
-
--- Авто-Клик (спам kill на таргет, много раз Slash и SlashStart)
-local function performAutoClick()
-    if not getKillRemote() then return end
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    enemyCache = {}
+    lastCacheUpdate = currentTime
     
-    local target = findClosestEnemy()
-    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-        local direction = (target.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Unit
-        -- Много раз вызываем SlashStart, если существует
-        if slashStartRemote then
-            for i = 1, SLASH_SPAM_COUNT do
-                slashStartRemote:FireServer(target, direction)
-            end
-        end
-        -- Много раз вызываем Slash
-        for i = 1, SLASH_SPAM_COUNT do
-            killRemote:FireServer(target, direction)
-        end
-    else
-        -- Если нет таргета, спамим fire для дамага много раз
-        local fireRemote = killRemote.Parent:FindFirstChild("Slash")
-        if fireRemote then
-            for i = 1, SLASH_SPAM_COUNT do
-                fireRemote:FireServer()
-            end
-        end
-    end
-end
-
--- Авто-Вин (экстремальный килл всех + телепорт к тебе + экипировка тула + много Slash и SlashStart — 5+ раундов/сек)
-local function autoWinLoop()
-    if autoEquipFirstToolEnabled then
-        equipFirstTool()  -- Экипируем тул синхронно с телепортом (каждые 0.01 сек)
-    end
-    
-    if not getKillRemote() then return end
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return enemyCache end
     
     local myGame = LocalPlayer:GetAttribute("Game") or "nothing"
     local myTeam = LocalPlayer:GetAttribute("Team") or "nothing"
@@ -625,108 +614,112 @@ local function autoWinLoop()
             local theirMap = player:GetAttribute("Map") or "nothing"
             
             if theirGame == myGame and theirMap == myMap and theirTeam ~= myTeam then
-                local direction = (player.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Unit
-                -- Много раз вызываем SlashStart на каждого врага, если существует
-                if slashStartRemote then
-                    for i = 1, SLASH_SPAM_COUNT do
-                        slashStartRemote:FireServer(player, direction)
-                    end
-                end
-                -- Много раз вызываем Slash на каждого врага
-                for i = 1, SLASH_SPAM_COUNT do
-                    killRemote:FireServer(player, direction)
-                end
-                
-                -- Телепорт врага к тебе (перед тобой на 2 studs)
-                if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                    player.Character.HumanoidRootPart.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -2)
-                end
+                table.insert(enemyCache, player)
             end
         end
     end
+    return enemyCache
 end
 
--- Луп авто-кликера (всегда вкл, супер-спам)
-local clickConnection
+local function performKillSpam()
+    if not killRemote then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local enemies = getAllEnemies()
+    local totalFires = 0
+    for _, target in pairs(enemies) do
+        if totalFires >= 100 then break end
+        pcall(function()  -- Error handling
+            if killRemote.Name == "kill" then
+                for i = 1, SLASH_SPAM_COUNT do
+                    killRemote:FireServer(target)
+                    totalFires += 1
+                end
+            else
+                local direction = (target.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Unit
+                for i = 1, SLASH_SPAM_COUNT do
+                    killRemote:FireServer(target, direction)
+                    totalFires += 1
+                end
+            end
+        end)
+    end
+    if #enemies > 0 then
+        print("Killed " .. #enemies .. " enemies this tick")  -- Debug
+    end
+end
+
 local function startAutoClick()
     if clickConnection then clickConnection:Disconnect() end
-    clickConnection = RunService.Heartbeat:Connect(function()
-        if autoClickEnabled then
-            performAutoClick()
-        end
-    end)
+    if autoClickEnabled then
+        clickConnection = RunService.Heartbeat:Connect(function()
+            performKillSpam()
+        end)
+    end
 end
 
--- Луп авто-вина (экстремальный спам для быстрого выигрыша раундов, теперь с экипировкой)
-spawn(function()
-    while true do
-        if autoWinEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character.Humanoid.Health > 0 then
-            local runningGame = getRunningGame(LocalPlayer)
-            if runningGame and runningGame:FindFirstChild("RoundStarted") and runningGame.RoundStarted.Value == true then
-                autoWinLoop()  -- Спамит всех + телепорт + экипировка + много Slash каждые 0.01 сек — 5+ раундов за секунду!
+local winConnection
+local function startAutoWin()
+    if winConnection then winConnection:Disconnect() end
+    if autoWinEnabled then
+        winConnection = task.spawn(function()
+            while autoWinEnabled do
+                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character.Humanoid.Health > 0 then
+                    performKillSpam()
+                end
+                task.wait(AUTO_WIN_DELAY)
             end
-        end
-        wait(AUTO_WIN_DELAY)
+        end)
     end
-end)
+end
 
--- Луп граба тула с Slash (если вкл)
-spawn(function()
+task.spawn(function()
     while true do
         if autoToolGrabEnabled then
             getKillRemote()
         end
-        wait(1)  -- Проверяем каждую секунду
+        task.wait(0.5)  -- Проверяем каждые 0.5 секунды
     end
 end)
 
--- Удален отдельный луп экипировки (теперь интегрирован в autoWinLoop для синхронизации)
-
--- Инициализация
 getKillRemote()
-startAutoClick()
 
--- Тоггл для kill all (управляет autoWinEnabled)
 players_tab:AddToggle('killall', { 
     Text = 'auto win', 
-    Default = false,
+    Default = false,  -- По умолчанию выкл
     Callback = function(Value)
         autoWinEnabled = Value
+        autoClickEnabled = Value  -- Связываем с Heartbeat
+        startAutoClick()  -- Перезапускаем/отключаем Heartbeat
+        startAutoWin()    -- Перезапускаем/отключаем быстрый луп
     end
 })
 
 local visuals = Window:AddTab("Visuals")
 
--- Левый Tabbox (исправлено на левый)
 local visuals_right = visuals:AddLeftTabbox()
 
--- Добавляем Tab в левый Tabbox (исправлена опечатка в имени переменной)
 local localplayer_tabb = visuals_right:AddTab("Enemy")
 
--- Левый Tabbox (исправлено на левый)
 local visuals_left = visuals:AddRightTabbox()
 
--- Добавляем Tab в левый Tabbox (исправлена опечатка в имени переменной)
 local localplayer_tab = visuals_left:AddTab("LocalPlayer")
 
-local Players = game:GetService("Players")
+-- reuse top-level Players
 local player = Players.LocalPlayer
 local coneColor = Color3.fromRGB(54, 57, 241) -- Начальный цвет
 local conePart = nil -- Хранит текущий конус
 local enabled = false -- Флаг для включения/выключения
 
--- Функция для создания конуса
 local function createCone(character)
     if not enabled or not character or not character:FindFirstChild("Head") then return end
 
-    -- Удаляем старый конус, если он есть
     if conePart and conePart.Parent then
         conePart:Destroy()
     end
 
     local head = character.Head
 
-    -- Создаём конус
     conePart = Instance.new("Part")
     conePart.Name = "ChinaHat"
     conePart.Size = Vector3.new(1, 1, 1)
@@ -751,7 +744,6 @@ local function createCone(character)
     return conePart
 end
 
--- Проверяем наличие конуса и обновляем цвет
 local function checkCone()
     if not enabled or not player.Character then 
         if conePart and conePart.Parent then
@@ -764,38 +756,31 @@ local function checkCone()
     if not hatExists then
         createCone(player.Character)
     else
-        -- обновляем цвет
         hatExists.Color = coneColor
     end
 end
 
--- Автоматическое пересоздание при респавне
 player.CharacterAdded:Connect(function(character)
     createCone(character)
     
-    -- Проверяем конус каждую секунду (на случай удаления)
     while character and character:IsDescendantOf(game) do
         checkCone()
         task.wait(1)
     end
 end)
 
--- Если персонаж уже есть при запуске скрипта
 if player.Character then
     createCone(player.Character)
 end
 
--- UI Elements for China Hat
 localplayer_tab:AddToggle('ChinahatToggle', { Text = 'Chinahat', Default = false })
     :AddColorPicker('ChinahatColor', { Default = Color3.fromRGB(54, 57, 241) })
 
--- Реакция на ВКЛ/ВЫКЛ тумблера
 Toggles.ChinahatToggle:OnChanged(function()
     enabled = Toggles.ChinahatToggle.Value
     checkCone()
 end)
 
--- Если меняем цвет — применяем его
 Options.ChinahatColor:OnChanged(function()
     coneColor = Options.ChinahatColor.Value
     checkCone()
@@ -803,12 +788,11 @@ end)
 
 local highlights = {}
 local espEnabled = false
-local refreshCoroutine = nil
-local distanceCoroutine = nil
+local espConnection = nil
 local currentColor = Color3.fromRGB(54, 57, 241)
 local maxDistance = 1000
+local lastESPUpdate = 0
 
--- ✅ Получаем атрибут команды игрока (TeamRed/TeamBlue и т.д.)
 local function getTeam(player)
     local team = player:GetAttribute("Team")
     if not team then
@@ -817,13 +801,11 @@ local function getTeam(player)
     return team
 end
 
--- ✅ Проверяем враг / союзник по атрибутам
 local function isEnemy(player)
     local localPlayer = game.Players.LocalPlayer
     local localTeam = getTeam(localPlayer)
     local targetTeam = getTeam(player)
 
-    -- если у кого-то нет команды, ESP не работает
     if not localTeam or not targetTeam then
  
         return false
@@ -838,7 +820,6 @@ local function isEnemy(player)
     return isEnemyCheck
 end
 
--- ✅ Проверяем жив ли игрок (Died атрибут + Humanoid)
 local function isAlive(character)
     if not character then
         return false
@@ -852,7 +833,6 @@ local function isAlive(character)
     return aliveCheck
 end
 
--- ✅ Создание подсветки
 local function createHighlight(character)
     local highlight = Instance.new("Highlight")
     highlight.FillColor = currentColor
@@ -863,7 +843,6 @@ local function createHighlight(character)
     return highlight
 end
 
--- ✅ Расчёт дистанции
 local function getDistance()
     local localChar = game.Players.LocalPlayer.Character
     if not localChar or not localChar:FindFirstChild("HumanoidRootPart") then
@@ -879,7 +858,6 @@ local function getDistance()
     end
 end
 
--- ✅ Добавление ESP
 local function addHighlight(player)
     if player == game.Players.LocalPlayer then return end
     if not isEnemy(player) then return end
@@ -894,7 +872,6 @@ local function addHighlight(player)
     end
 end
 
--- ✅ Удаление ESP
 local function removeHighlight(player)
     if highlights[player] then
         highlights[player]:Destroy()
@@ -902,7 +879,6 @@ local function removeHighlight(player)
     end
 end
 
--- ✅ Настройка игрока
 local function setupPlayer(player)
     local distFunc = getDistance()
     local dist = distFunc(player)
@@ -912,7 +888,6 @@ local function setupPlayer(player)
         addHighlight(player)
     end
 
-    -- При респауне
     player.CharacterAdded:Connect(function()
         task.wait(0.5)  -- Ждём загрузки
         local newDistFunc = getDistance()
@@ -924,7 +899,6 @@ local function setupPlayer(player)
         end
     end)
 
-    -- Обновление при смене атрибута Team
     player:GetAttributeChangedSignal("Team"):Connect(function()
         if espEnabled then
             if isEnemy(player) then
@@ -935,7 +909,6 @@ local function setupPlayer(player)
         end
     end)
 
-    -- Обновление при изменении Died
     if player.Character then
         player.Character:GetAttributeChangedSignal("Died"):Connect(function()
             if espEnabled then
@@ -949,7 +922,6 @@ local function setupPlayer(player)
         end)
     end
 
-    -- Очистка при выходе
     player.AncestryChanged:Connect(function()
         if not player.Parent then
             removeHighlight(player)
@@ -957,7 +929,6 @@ local function setupPlayer(player)
     end)
 end
 
--- ✅ Обновление дистанции
 local function updateDistances()
     local distFunc = getDistance()
     for _, player in ipairs(game.Players:GetPlayers()) do
@@ -977,7 +948,6 @@ local function updateDistances()
     end
 end
 
--- ✅ Полное обновление ESP
 local function refreshAllWithinDistance()
     local distFunc = getDistance()
     for _, player in ipairs(game.Players:GetPlayers()) do
@@ -996,7 +966,6 @@ local function refreshAllWithinDistance()
     end
 end
 
--- ✅ Циклы
 local function startDistanceLoop()
     if distanceCoroutine then return end
     distanceCoroutine = coroutine.create(function()
@@ -1033,7 +1002,6 @@ local function stopLoops()
     end
 end
 
--- ✅ UI
 localplayer_tabb:AddToggle('EspToggle', { Text = 'Esp', Default = false })
     :AddColorPicker('EspColor', { Default = Color3.fromRGB(54, 57, 241) })
 
@@ -1042,25 +1010,36 @@ Toggles.EspToggle:OnChanged(function(value)
     currentColor = Options.EspColor.Value
 
     if value then
-        local localTeam = getTeam(game.Players.LocalPlayer)
+        local localTeam = getTeam(Players.LocalPlayer)
         if not localTeam then
             espEnabled = false
             return
         end
 
-        for _, player in ipairs(game.Players:GetPlayers()) do
+        for _, player in ipairs(Players:GetPlayers()) do
             setupPlayer(player)
         end
 
-        game.Players.PlayerAdded:Connect(setupPlayer)
-        startDistanceLoop()
-        startRefreshLoop()
+        Players.PlayerAdded:Connect(setupPlayer)
+        
+        -- Single optimized Heartbeat loop (throttled to 1 update per second)
+        if espConnection then espConnection:Disconnect() end
+        espConnection = RunService.Heartbeat:Connect(function()
+            local now = tick()
+            if now - lastESPUpdate >= 0.1 then
+                lastESPUpdate = now
+                updateESP()
+            end
+        end)
     else
-        for _, player in ipairs(game.Players:GetPlayers()) do
+        if espConnection then
+            espConnection:Disconnect()
+            espConnection = nil
+        end
+        for _, player in ipairs(Players:GetPlayers()) do
             removeHighlight(player)
         end
         highlights = {}
-        stopLoops()
     end
 end)
 
@@ -1083,34 +1062,25 @@ localplayer_tabb:AddSlider('DistanceEsp', {
     Compact = false,
     Callback = function(Value)
         maxDistance = Value
-        if espEnabled then
-            updateDistances()
-        end
     end
 })
 
--- Variables
 local playerEnabled = false
 local toolEnabled = false
 local toolCol = Color3.fromRGB(255, 0, 0)
 local playerCol = Color3.fromRGB(255, 255, 255)
 
-local Players = game:GetService("Players")
+-- reuse top-level Players
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 
--- =========================
--- Functions for player (with ForceField material)
--- =========================
 function applyPlayer()
     if not Character then return end
 
-    -- Change material and color of all player parts
     for _, part in pairs(Character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.Material = Enum.Material.ForceField
             part.Color = playerCol
-            -- Preserve CanCollide
             part.CanCollide = part.CanCollide
         end
     end
@@ -1119,27 +1089,21 @@ end
 function resetPlayer()
     if not Character then return end
 
-    -- Reset to default material and color
     for _, part in pairs(Character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.Material = Enum.Material.Plastic
             part.Color = Color3.fromRGB(255, 255, 255)
-            -- Preserve CanCollide
             part.CanCollide = part.CanCollide
         end
     end
 end
 
--- =========================
--- Functions for tools
--- =========================
 function applyTool(tool)
     if not tool:IsA("Tool") then return end
     for _, part in pairs(tool:GetDescendants()) do
         if part:IsA("BasePart") then
             part.Material = Enum.Material.ForceField
             part.Color = toolCol
-            -- Preserve CanCollide
             part.CanCollide = part.CanCollide
         end
     end
@@ -1151,18 +1115,15 @@ function resetTool(tool)
         if part:IsA("BasePart") then
             part.Material = Enum.Material.Plastic
             part.Color = Color3.fromRGB(255, 255, 255)
-            -- Preserve CanCollide
             part.CanCollide = part.CanCollide
         end
     end
 end
 
 function applyAllTools()
-    -- Apply to tools in Backpack
     for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
         applyTool(tool)
     end
-    -- Apply to equipped tool in Character (held item)
     for _, tool in pairs(Character:GetChildren()) do
         if tool:IsA("Tool") then
             applyTool(tool)
@@ -1171,13 +1132,11 @@ function applyAllTools()
 end
 
 function resetTools()
-    -- Reset tools in Backpack
     for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
         if tool:IsA("Tool") then
             resetTool(tool)
         end
     end
-    -- Reset equipped tool in Character
     for _, tool in pairs(Character:GetChildren()) do
         if tool:IsA("Tool") then
             resetTool(tool)
@@ -1185,9 +1144,6 @@ function resetTools()
     end
 end
 
--- =========================
--- Event Setup
--- =========================
 local function setupCharacterEvents()
     Character.ChildAdded:Connect(function(child)
         if toolEnabled and child:IsA("Tool") then
@@ -1196,24 +1152,20 @@ local function setupCharacterEvents()
     end)
 end
 
--- Handle new tools added to Backpack
 LocalPlayer.Backpack.ChildAdded:Connect(function(child)
     if toolEnabled and child:IsA("Tool") then
         applyTool(child)
     end
 end)
 
--- Initial setup
 setupCharacterEvents()
 
--- Handle character respawn
 LocalPlayer.CharacterAdded:Connect(function(newChar)
     Character = newChar
     if playerEnabled then
         applyPlayer()
     end
     if toolEnabled then
-        -- Apply to any immediately equipped tool
         for _, tool in pairs(Character:GetChildren()) do
             if tool:IsA("Tool") then
                 applyTool(tool)
@@ -1223,7 +1175,6 @@ LocalPlayer.CharacterAdded:Connect(function(newChar)
     setupCharacterEvents()
 end)
 
--- Cyclic update to ensure application sticks without lagging (every 2 seconds)
 spawn(function()
     while true do
         if playerEnabled then
@@ -1236,11 +1187,7 @@ spawn(function()
     end
 end)
 
--- =========================
--- UI Elements
--- =========================
 
--- ForceField on player
 localplayer_tab:AddToggle("ForceFieldPlayerToggle", {
     Text = "ForceField on Player",
     Default = false
@@ -1248,7 +1195,6 @@ localplayer_tab:AddToggle("ForceFieldPlayerToggle", {
     Default = Color3.fromRGB(255, 255, 255)
 })
 
--- Toggle for tools
 localplayer_tab:AddToggle("ToolMaterialToggle", {
     Text = "Tool FF",
     Default = false
@@ -1256,7 +1202,6 @@ localplayer_tab:AddToggle("ToolMaterialToggle", {
     Default = Color3.fromRGB(255, 0, 0)
 })
 
--- OnChanged for player toggle
 Toggles.ForceFieldPlayerToggle:OnChanged(function()
     playerEnabled = Toggles.ForceFieldPlayerToggle.Value
     if playerEnabled then
@@ -1266,7 +1211,6 @@ Toggles.ForceFieldPlayerToggle:OnChanged(function()
     end
 end)
 
--- OnChanged for player color
 Options.PlayerColor:OnChanged(function()
     playerCol = Options.PlayerColor.Value
     if playerEnabled then
@@ -1274,7 +1218,6 @@ Options.PlayerColor:OnChanged(function()
     end
 end)
 
--- OnChanged for tool toggle
 Toggles.ToolMaterialToggle:OnChanged(function()
     toolEnabled = Toggles.ToolMaterialToggle.Value
     if toolEnabled then
@@ -1284,7 +1227,6 @@ Toggles.ToolMaterialToggle:OnChanged(function()
     end
 end)
 
--- OnChanged for tool color
 Options.ToolColor:OnChanged(function()
     toolCol = Options.ToolColor.Value
     if toolEnabled then
@@ -1294,72 +1236,35 @@ end)
 
 localplayer_tab:AddDivider()
 
--- Сервисы
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+-- reuse top-level RunService
+-- reuse top-level UserInputService
 local TweenService = game:GetService("TweenService")
 
 local OtherTab   = Window:AddTab("Other")
 
--- таббокс слева (обычно без названия при создании)
 local LeftTabbox = OtherTab:AddLeftTabbox()
 
--- сам таб внутри таббокса
 local SelfTab = LeftTabbox:AddTab("Self")
 
---// Services
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
+-- reuse top-level Players
+-- reuse top-level RunService
 
 local player = Players.LocalPlayer
 local rootPart, humanoid = nil, nil
 
---// BunnyHop Vars
-local bunnyHopEnabled = false
-local jumped = false
-local rotationMode = "Forward"
-local bhopSpeed = 50 -- дефолт
-
---// FakeLag Vars
 local fakeLagEnabled = false
 local lagChance = 0.6
 local freezeTime = 0.2
 local skipTime = 0.1
 
---// Character Handler
 local function setupChar(char)
     rootPart = char:WaitForChild("HumanoidRootPart")
     humanoid = char:WaitForChild("Humanoid")
-    humanoid.AutoRotate = true
 end
 
 player.CharacterAdded:Connect(setupChar)
 if player.Character then setupChar(player.Character) end
 
---// Input Handling
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.Space then
-        jumped = true
-    end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.Space then
-        jumped = false
-    end
-end)
-
---// Camera Directions
-local function getCameraDirs()
-    local camCF = workspace.CurrentCamera.CFrame
-    local forward = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z).Unit
-    local right = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z).Unit
-    return forward, right
-end
-
---// FakeLag Function
 local function applyFakeLag()
     if not humanoid or not fakeLagEnabled then return end
     if math.random() < lagChance then
@@ -1380,59 +1285,14 @@ local function applyFakeLag()
     end
 end
 
---// Main Loop
 RunService.RenderStepped:Connect(function(dt)
     if not rootPart or not humanoid then return end
 
-    -- FakeLag check
     if fakeLagEnabled then
         applyFakeLag()
     end
-
-    -- BunnyHop check
-    if not bunnyHopEnabled then
-        humanoid.AutoRotate = true
-        return
-    end
-
-    local state = humanoid:GetState()
-    local onGround = (state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.RunningNoPhysics)
-
-    if onGround then
-        humanoid.AutoRotate = true
-        return
-    end
-
-    if jumped then
-        humanoid.AutoRotate = false
-
-        local forward, right = getCameraDirs()
-        local move = Vector3.new()
-
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += forward end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= forward end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += right end
-        if move.Magnitude == 0 then move = forward end
-
-        rootPart.AssemblyLinearVelocity = move.Unit * bhopSpeed + Vector3.new(0, rootPart.AssemblyLinearVelocity.Y, 0)
-
-        if rotationMode == "Spin" then
-            rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(10), 0)
-
-        elseif rotationMode == "180" then
-            local lookAt = rootPart.Position - forward
-            rootPart.CFrame = CFrame.new(rootPart.Position, Vector3.new(lookAt.X, rootPart.Position.Y, lookAt.Z))
-
-        elseif rotationMode == "Forward" then
-            rootPart.CFrame = CFrame.new(rootPart.Position, rootPart.Position + forward)
-        end
-    else
-        humanoid.AutoRotate = true
-    end
 end)
 
--- UI Elements
 SelfTab:AddToggle('FakeLagEnabled', {
     Text = 'Fake Lag',
     Default = false,
@@ -1441,73 +1301,226 @@ SelfTab:AddToggle('FakeLagEnabled', {
     end
 })
 
-local RunService = game:GetService("RunService")
-local player = game.Players.LocalPlayer
+-- reuse top-level RunService
+-- reuse top-level Players
+
+local player = Players.LocalPlayer
 
 local hrp, humanoid
 local connection -- для хранения RenderStepped
 
--- Функция включения/выключения Fake AA
+local fakeAAEnabled = false
+
 local function setFakeAA(enabled)
-	if enabled then
-		if player.Character then
-			humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-			hrp = player.Character:FindFirstChild("HumanoidRootPart")
-			if humanoid and hrp then
-				humanoid.AutoRotate = false
-				-- Подключаем RenderStepped
-				connection = RunService.RenderStepped:Connect(function()
-					local moveDir = humanoid.MoveDirection
-					if moveDir.Magnitude > 0.01 then
-						local opposite = -moveDir.Unit
-						opposite = Vector3.new(opposite.X, 0, opposite.Z)
-						if opposite.Magnitude > 0.001 then
-							hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + opposite)
-						end
-					end
-				end)
-			end
-		end
-	else
-		-- Отключаем Fake AA
-		if connection then
-			connection:Disconnect()
-			connection = nil
-		end
-		if humanoid then
-			humanoid.AutoRotate = true
-		end
-	end
+    fakeAAEnabled = enabled
+    if enabled then
+        if player.Character then
+            humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if humanoid and hrp then
+                humanoid.AutoRotate = false
+                connection = RunService.RenderStepped:Connect(function()
+                    if not fakeAAEnabled then return end
+                    local moveDir = humanoid.MoveDirection
+                    if moveDir.Magnitude > 0.01 then
+                        local opposite = -moveDir.Unit
+                        opposite = Vector3.new(opposite.X, 0, opposite.Z)
+                        if opposite.Magnitude > 0.001 then
+                            hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + opposite)
+                        end
+                    end
+                end)
+            end
+        end
+    else
+        if connection then
+            connection:Disconnect()
+            connection = nil
+        end
+        if humanoid then
+            humanoid.AutoRotate = true
+        end
+    end
 end
 
--- Linoria Toggle
-SelfTab:AddToggle('FakeLagEnabled', {
-	Text = 'Fake aa', 
-	Default = false,
-	Callback = function(Value)
-		setFakeAA(Value)
-	end
-})
-
-SelfTab:AddDivider()
-
--- Подписка на смену персонажа (чтобы работало при respawn)
 player.CharacterAdded:Connect(function(char)
-	humanoid = char:WaitForChild("Humanoid")
-	hrp = char:WaitForChild("HumanoidRootPart")
+    humanoid = char:WaitForChild("Humanoid")
+    hrp = char:WaitForChild("HumanoidRootPart")
+    if not fakeAAEnabled then
+        humanoid.AutoRotate = true
+    end
 end)
 
+SelfTab:AddToggle('FakeAAEnabled', {
+    Text = 'Fake AA', 
+    Default = false,
+    Callback = function(Value)
+        setFakeAA(Value)
+    end
+})
 
-SelfTab:AddToggle('BunnyHopEnabled', {
-    Text = 'Bunny Hop',
+-- reuse top-level Players
+-- reuse top-level RunService
+-- reuse top-level UserInputService
+
+local player = Players.LocalPlayer
+local rootPart, humanoid = nil, nil
+
+-- bhop state
+local bunnyHopEnabled = false
+local rotationMode = "-180"
+local bhopSpeed = 50
+local spinSpeed = 10 -- deg per frame
+local jitterAngle = 8 -- deg
+local jumped = false
+local wasOnGround = false
+local stopPulseUntil = 0 -- tick() до которого держим горизонтальную скорость = 0
+
+-- Character
+local function setupChar(char)
+    rootPart = char:WaitForChild("HumanoidRootPart")
+    humanoid = char:WaitForChild("Humanoid")
+    humanoid.AutoRotate = true
+    wasOnGround = true
+end
+player.CharacterAdded:Connect(setupChar)
+if player.Character then setupChar(player.Character) end
+
+-- Jump input
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.Space then
+        jumped = true
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.Space then
+        jumped = false
+        -- короткий стоп-импульс 0.01с для стабилизации после отжатия
+        if bunnyHopEnabled and rootPart then
+            stopPulseUntil = tick() + 0.01
+        end
+    end
+end)
+
+-- Camera planar dirs
+local function getCameraDirs()
+    local camCF = workspace.CurrentCamera.CFrame
+    local forward = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z).Unit
+    local right = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z).Unit
+    return forward, right
+end
+
+local function anyMovementDown()
+    return UserInputService:IsKeyDown(Enum.KeyCode.W)
+        or UserInputService:IsKeyDown(Enum.KeyCode.A)
+        or UserInputService:IsKeyDown(Enum.KeyCode.S)
+        or UserInputService:IsKeyDown(Enum.KeyCode.D)
+end
+
+local function isBhopActive()
+    -- активен, если тумблер включён и (кейбинд не задан или зажат)
+    local picker = Options.BhopKeybind
+    local keyOk = true
+    if picker and picker.GetState then
+        keyOk = picker:GetState() or (picker.Value == nil or picker.Value == 'None')
+    end
+    return bunnyHopEnabled and keyOk
+end
+
+RunService.RenderStepped:Connect(function(dt)
+    if not rootPart or not humanoid then return end
+
+    if not isBhopActive() then
+        humanoid.AutoRotate = true
+        wasOnGround = true
+        return
+    end
+
+    local state = humanoid:GetState()
+    local onGround = (state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.RunningNoPhysics)
+
+    -- На приземлении не обнуляем скорость, чтобы не "тормозить".
+    -- Если нет нажатых кнопок — чуть подрезаем скольжение.
+    if onGround and not wasOnGround then
+        if not anyMovementDown() then
+            rootPart.AssemblyLinearVelocity = Vector3.new(0, rootPart.AssemblyLinearVelocity.Y, 0)
+        end
+    end
+    wasOnGround = onGround
+
+    -- короткий стоп-импульс после отпускания Space
+    if stopPulseUntil > tick() then
+        rootPart.AssemblyLinearVelocity = Vector3.new(0, rootPart.AssemblyLinearVelocity.Y, 0)
+        return
+    end
+
+    if onGround then
+        -- на земле в штатный режим
+        humanoid.AutoRotate = true
+        return
+    end
+
+    local forward, right = getCameraDirs()
+
+    -- В воздухе — основной bhop
+    local move = Vector3.new()
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += forward end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= forward end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= right end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += right end
+    if move.Magnitude == 0 then move = forward end
+
+    -- Включаем/выключаем авторотейт в зависимости от режима
+    if rotationMode == "Jitter" then
+        humanoid.AutoRotate = false
+    else
+        humanoid.AutoRotate = not jumped and true or false
+    end
+
+    if jumped then
+        rootPart.AssemblyLinearVelocity = move.Unit * bhopSpeed + Vector3.new(0, rootPart.AssemblyLinearVelocity.Y, 0)
+
+        if rotationMode == "spin" then
+            rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(spinSpeed), 0)
+        elseif rotationMode == "180" then
+            local lookAt = rootPart.Position - forward
+            rootPart.CFrame = CFrame.new(rootPart.Position, Vector3.new(lookAt.X, rootPart.Position.Y, lookAt.Z))
+        elseif rotationMode == "-180" then
+            local lookAt = rootPart.Position + forward
+            rootPart.CFrame = CFrame.new(rootPart.Position, Vector3.new(lookAt.X, rootPart.Position.Y, lookAt.Z))
+        elseif rotationMode == "jitter" then
+            -- быстрый раскач по yaw, авто-ротейт выключен
+            local sign = (math.floor(os.clock()*1000) % 2 == 0) and 1 or -1
+            rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(sign * jitterAngle), 0)
+        end
+    else
+        -- без Space в воздухе не трогаем горизонтальную скорость
+    end
+end)
+
+local LeftTabbbox = OtherTab:AddLeftTabbox()
+-- Tabs for bhop (в том же Tabbox, где 'Self')
+local Tab11 = LeftTabbbox:AddTab('bhop')
+local Tab22 = LeftTabbbox:AddTab('bhop settings')
+
+Tab11:AddToggle('BunnyHopEnabled', {
+    Text = 'bhop',
     Default = false,
     Callback = function(Value)
         bunnyHopEnabled = Value
     end
 })
+    :AddKeyPicker('bhopKeybind', {
+        Default = 'None',
+        SyncToggleState = true,
+        Mode = 'Toggle',
+        Text = 'bhop',
+        NoUI = false
+    })
 
-SelfTab:AddSlider('BhopSpeed', {
-    Text = 'Bhop Speed',
+Tab11:AddSlider('BhopSpeed', {
+    Text = 'bhop speed',
     Default = 50,
     Min = 10,
     Max = 360,
@@ -1518,13 +1531,38 @@ SelfTab:AddSlider('BhopSpeed', {
     end
 })
 
-SelfTab:AddDropdown('RotationMode', {
-    Values = { 'Spin', '180', 'Forward' },
-    Default = 3,
+Tab11:AddDropdown('RotationMode', {
+    Values = { 'spin', '180', '-180', 'jitter' },
+    Default = 4,
     Multi = false,
-    Text = 'Rotation Mode',
+    Text = 'rotation mode',
     Callback = function(Value)
         rotationMode = Value
+    end
+})
+
+Tab22:AddSlider('SpinSpeed', {
+    Text = 'spin speed (deg/frame)',
+    Default = 10,
+    Min = 1,
+    Max = 45,
+    Rounding = 0,
+    Callback = function(Value)
+        spinSpeed = Value
+    end
+})
+
+-- Разделитель и секция Jitter
+Tab22:AddDivider()
+
+Tab22:AddSlider('JitterAngle', {
+    Text = 'jitter angle (deg)',
+    Default = 8,
+    Min = 1,
+    Max = 30,
+    Rounding = 0,
+    Callback = function(Value)
+        jitterAngle = Value
     end
 })
 
@@ -1536,13 +1574,12 @@ local bodyGyro, bodyVel
 local flyConnection
 local noclipConnection
 
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
+-- reuse top-level Players
+-- reuse top-level UserInputService
+-- reuse top-level RunService
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+-- reuse top-level Camera
 
--- disable fly and noclip
 local function disableFly()
     if flyConnection then
         flyConnection:Disconnect()
@@ -1575,7 +1612,6 @@ local function disableFly()
     end
 end
 
--- toggle fly
 local function toggleFly(enabled)
     if enabled == flyEnabled then return end
     flyEnabled = enabled
@@ -1595,14 +1631,12 @@ local function toggleFly(enabled)
     humanoid.WalkSpeed = 0
     humanoid.PlatformStand = true
 
-    -- Initial noclip for all parts
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = false
         end
     end
 
-    -- Continuous noclip enforcement for all parts
     noclipConnection = RunService.Stepped:Connect(function()
         if not flyEnabled then return end
         local currentChar = LocalPlayer.Character
@@ -1661,7 +1695,6 @@ local function toggleFly(enabled)
     end)
 end
 
--- Handle respawn
 LocalPlayer.CharacterAdded:Connect(function(newChar)
     if flyEnabled then
         task.wait(0.1)
@@ -1670,12 +1703,11 @@ LocalPlayer.CharacterAdded:Connect(function(newChar)
     end
 end)
 
--- Fly Speed slider
 SelfTab:AddSlider('FlySpeed', {
     Text = 'Fly Speed',
     Default = 100,
     Min = 0,
-    Max = 200,
+    Max = 1400,
     Rounding = 0,
     Compact = false,
     Callback = function(Value)
@@ -1694,303 +1726,11 @@ SelfTab:AddLabel('Fly Key'):AddKeyPicker('FlyKeybind', {
     end
 })
 
-SelfTab:AddDivider()
-
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local ContextActionService = game:GetService("ContextActionService")
-local RunService = game:GetService("RunService")
-
-fcRunning = false
-local Camera = workspace.CurrentCamera
-workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-	local newCamera = workspace.CurrentCamera
-	if newCamera then
-		Camera = newCamera
-	end
-end)
-
-local INPUT_PRIORITY = Enum.ContextActionPriority.High.Value
-
-Spring = {} do
-	Spring.__index = Spring
-
-	function Spring.new(freq, pos)
-		local self = setmetatable({}, Spring)
-		self.f = freq
-		self.p = pos
-		self.v = pos*0
-		return self
-	end
-
-	function Spring:Update(dt, goal)
-		local f = self.f*2*math.pi
-		local p0 = self.p
-		local v0 = self.v
-
-		local offset = goal - p0
-		local decay = math.exp(-f*dt)
-
-		local p1 = goal + (v0*dt - offset*(f*dt + 1))*decay
-		local v1 = (f*dt*(offset*f - v0) + v0)*decay
-
-		self.p = p1
-		self.v = v1
-
-		return p1
-	end
-
-	function Spring:Reset(pos)
-		self.p = pos
-		self.v = pos*0
-	end
-end
-
-local cameraPos = Vector3.new()
-local cameraRot = Vector2.new()
-
-local velSpring = Spring.new(5, Vector3.new())
-local panSpring = Spring.new(5, Vector2.new())
-
-local cameraFov = 70
-
-Input = {} do
-
-	keyboard = {
-		W = 0,
-		A = 0,
-		S = 0,
-		D = 0,
-		E = 0,
-		Q = 0,
-		Up = 0,
-		Down = 0,
-		LeftShift = 0,
-	}
-
-	mouse = {
-		Delta = Vector2.new(),
-	}
-
-	NAV_KEYBOARD_SPEED = Vector3.new(1, 1, 1)
-	PAN_MOUSE_SPEED = Vector2.new(1, 1)*(math.pi/64)
-	NAV_ADJ_SPEED = 0.75
-	NAV_SHIFT_MUL = 0.25
-
-	navSpeed = 1
-
-	function Input.Vel(dt)
-		navSpeed = math.clamp(navSpeed + dt*(keyboard.Up - keyboard.Down)*NAV_ADJ_SPEED, 0.01, 4)
-
-		local kKeyboard = Vector3.new(
-			keyboard.D - keyboard.A,
-			keyboard.E - keyboard.Q,
-			keyboard.S - keyboard.W
-		)*NAV_KEYBOARD_SPEED
-
-		local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
-
-		return (kKeyboard)*(navSpeed*(shift and NAV_SHIFT_MUL or 1))
-	end
-
-	function Input.Pan(dt)
-		local kMouse = mouse.Delta*PAN_MOUSE_SPEED
-		mouse.Delta = Vector2.new()
-		return kMouse
-	end
-
-	do
-		function Keypress(action, state, input)
-			keyboard[input.KeyCode.Name] = state == Enum.UserInputState.Begin and 1 or 0
-			return Enum.ContextActionResult.Sink
-		end
-
-		function MousePan(action, state, input)
-			local delta = input.Delta
-			mouse.Delta = Vector2.new(-delta.y, -delta.x)
-			return Enum.ContextActionResult.Sink
-		end
-
-		function Zero(t)
-			for k, v in pairs(t) do
-				t[k] = v*0
-			end
-		end
-
-		function Input.StartCapture()
-			ContextActionService:BindActionAtPriority("FreecamKeyboard",Keypress,false,INPUT_PRIORITY,
-				Enum.KeyCode.W,
-				Enum.KeyCode.A,
-				Enum.KeyCode.S,
-				Enum.KeyCode.D,
-				Enum.KeyCode.E,
-				Enum.KeyCode.Q,
-				Enum.KeyCode.Up,
-				Enum.KeyCode.Down
-			)
-			ContextActionService:BindActionAtPriority("FreecamMousePan",MousePan,false,INPUT_PRIORITY,Enum.UserInputType.MouseMovement)
-		end
-
-		function Input.StopCapture()
-			navSpeed = 1
-			Zero(keyboard)
-			Zero(mouse)
-			ContextActionService:UnbindAction("FreecamKeyboard")
-			ContextActionService:UnbindAction("FreecamMousePan")
-		end
-	end
-end
-
-function GetFocusDistance(cameraFrame)
-	local znear = 0.1
-	local viewport = Camera.ViewportSize
-	local projy = 2*math.tan(math.rad(cameraFov/2))
-	local projx = viewport.x/viewport.y*projy
-	local fx = cameraFrame.RightVector
-	local fy = cameraFrame.UpVector
-	local fz = cameraFrame.LookVector
-
-	local minVect = Vector3.new()
-	local minDist = 512
-
-	for x = 0, 1, 0.5 do
-		for y = 0, 1, 0.5 do
-			local cx = (x - 0.5)*projx
-			local cy = (y - 0.5)*projy
-			local offset = fx*cx - fy*cy + fz
-			local origin = cameraFrame.Position + offset*znear
-			local direction = offset.Unit * minDist
-			local result = workspace:Raycast(origin, direction)
-			local dist = minDist
-			local hit = origin + direction
-			if result then
-				hit = result.Position
-				dist = (hit - origin).Magnitude
-			end
-			if minDist > dist then
-				minDist = dist
-				minVect = offset.Unit
-			end
-		end
-	end
-
-	return fz:Dot(minVect)*minDist
-end
-
-local function StepFreecam(dt)
-	local vel = velSpring:Update(dt, Input.Vel(dt))
-	local pan = panSpring:Update(dt, Input.Pan(dt))
-
-	local zoomFactor = math.sqrt(math.tan(math.rad(70/2))/math.tan(math.rad(cameraFov/2)))
-
-	cameraRot = cameraRot + pan*Vector2.new(0.75, 1)*8*(dt/zoomFactor)
-	cameraRot = Vector2.new(math.clamp(cameraRot.x, -math.rad(90), math.rad(90)), cameraRot.y%(2*math.pi))
-
-	local cameraCFrame = CFrame.new(cameraPos)*CFrame.fromOrientation(cameraRot.x, cameraRot.y, 0)*CFrame.new(vel*Vector3.new(1, 1, 1)*64*dt)
-	cameraPos = cameraCFrame.Position
-
-	Camera.CFrame = cameraCFrame
-	Camera.Focus = cameraCFrame*CFrame.new(0, 0, -GetFocusDistance(cameraCFrame))
-	Camera.FieldOfView = cameraFov
-end
-
-local PlayerState = {} do
-	mouseBehavior = ""
-	mouseIconEnabled = ""
-	cameraType = ""
-	cameraFocus = ""
-	cameraCFrame = ""
-	cameraFieldOfView = ""
-
-	function PlayerState.Push()
-		cameraFieldOfView = Camera.FieldOfView
-		Camera.FieldOfView = 70
-
-		cameraType = Camera.CameraType
-		Camera.CameraType = Enum.CameraType.Custom
-
-		cameraCFrame = Camera.CFrame
-		cameraFocus = Camera.Focus
-
-		mouseIconEnabled = UserInputService.MouseIconEnabled
-		UserInputService.MouseIconEnabled = true
-
-		mouseBehavior = UserInputService.MouseBehavior
-		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-	end
-
-	function PlayerState.Pop()
-		Camera.FieldOfView = cameraFieldOfView
-		cameraFieldOfView = nil
-
-		Camera.CameraType = cameraType
-		cameraType = nil
-
-		Camera.CFrame = cameraCFrame
-		cameraCFrame = nil
-
-		Camera.Focus = cameraFocus
-		cameraFocus = nil
-
-		UserInputService.MouseIconEnabled = mouseIconEnabled
-		mouseIconEnabled = nil
-
-		UserInputService.MouseBehavior = mouseBehavior
-		mouseBehavior = nil
-	end
-end
-
-function StartFreecam(pos)
-	if fcRunning then
-		StopFreecam()
-	end
-	local cameraCFrame = Camera.CFrame
-	if pos then
-		cameraCFrame = pos
-	end
-	cameraRot = Vector2.new()
-	cameraPos = cameraCFrame.Position
-	cameraFov = 70
-
-	velSpring:Reset(Vector3.new())
-	panSpring:Reset(Vector2.new())
-
-	PlayerState.Push()
-	RunService:BindToRenderStep("Freecam", Enum.RenderPriority.Camera.Value, StepFreecam)
-	Input.StartCapture()
-	fcRunning = true
-end
-
-function StopFreecam()
-	if not fcRunning then return end
-	Input.StopCapture()
-	RunService:UnbindFromRenderStep("Freecam")
-	PlayerState.Pop()
-	fcRunning = false
-end
-
--- GUI Integration
-SelfTab:AddLabel('FreeCam'):AddKeyPicker('fckey', {
-    Default = 'F1',
-    SyncToggleState = true,
-    Mode = 'Toggle',
-    Text = 'Free cam',
-    NoUI = false,
-    Callback = function(Value)
-        if Value then
-            StartFreecam()
-        else
-            StopFreecam()
-        end
-    end
-})
-
 local player = game:GetService("Players").LocalPlayer
-local RunService = game:GetService("RunService")
+-- reuse top-level RunService
 
 SelfTab:AddDivider()
 
--- // WalkSpeed Boost (TP-style movement)
 local uis = game:GetService("UserInputService")
 local runService = game:GetService("RunService")
 local player = game.Players.LocalPlayer
@@ -2004,7 +1744,6 @@ if player.Character then
     hrp = player.Character:WaitForChild("HumanoidRootPart")
 end
 
--- Состояние кнопок
 local moving = {
     W = false,
     S = false,
@@ -2012,7 +1751,6 @@ local moving = {
     D = false,
 }
 
--- Обработка нажатия
 uis.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == Enum.KeyCode.W then moving.W = true end
@@ -2021,7 +1759,6 @@ uis.InputBegan:Connect(function(input, gpe)
     if input.KeyCode == Enum.KeyCode.D then moving.D = true end
 end)
 
--- Обработка отпускания
 uis.InputEnded:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.W then moving.W = false end
     if input.KeyCode == Enum.KeyCode.S then moving.S = false end
@@ -2041,13 +1778,62 @@ SelfTab:AddSlider('WalkTPSpeed', {
     end
 })
 
--- Плавное движение
+-- Jump Power % (цикличное и без лагов)
+local Players = game:GetService("Players")
+-- reuse top-level RunService
+local player = Players.LocalPlayer
+local humanoid
+
+local function attachHumanoid(char)
+	humanoid = char:WaitForChild("Humanoid")
+	if humanoid then
+		humanoid.UseJumpPower = true
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+	end
+end
+player.CharacterAdded:Connect(attachHumanoid)
+if player.Character then attachHumanoid(player.Character) end
+
+local function percentToJumpPower(p) -- -20..250
+	if p >= 0 then
+		return math.clamp(50 + 1.8 * p, 0, 500)
+	else
+		return math.clamp(50 + 2.5 * p, 0, 500)
+	end
+end
+
+local jpPercent = 0
+local lastApplied = nil
+
+SelfTab:AddSlider('JumpPowerPercent', {
+	Text = 'Jump Boost',
+	Default = 0,
+	Min = -20,
+	Max = 240,
+	Rounding = 0,
+	Suffix = '%',
+	Callback = function(p)
+		jpPercent = p
+	end
+})
+
+-- Мягкий цикл: проверяем и применяем только при расхождении
+RunService.RenderStepped:Connect(function()
+	if not humanoid or humanoid.Parent == nil then return end
+
+	local target = percentToJumpPower(jpPercent)
+	if lastApplied ~= target or not humanoid.UseJumpPower or humanoid.JumpPower ~= target then
+		humanoid.UseJumpPower = true
+		humanoid.JumpPower = target
+		lastApplied = target
+	end
+end)
+
 runService.RenderStepped:Connect(function(dt)
     if hrp and getgenv().WalkTPSpeed and getgenv().WalkTPSpeed > 0 then
         local cam = workspace.CurrentCamera
         local moveVec = Vector3.zero
 
-        -- Берём векторы камеры, обнуляем Y (движение только по земле)
         local forward = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
         local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z).Unit
 
@@ -2063,13 +1849,24 @@ runService.RenderStepped:Connect(function(dt)
     end
 end)
 
+local RightTabbox = OtherTab:AddRightTabbox()
+
+local OtherTabb = OtherTab:AddRightTabbox()
+
+local sounds_tab = OtherTabb:AddTab('Sounds')   
+
 local player = game.Players.LocalPlayer
 
 local sounds = {
     ["Gunshot"] = "rbxassetid://0",
-    ["Headshot"] = "rbxassetid://5764885315",
+    ["headshot"] = "rbxassetid://5764885315",
     ["minecraft bow"] = "rbxassetid://135478009117226",
     ["cs"] = "rbxassetid://7269900245",
+    ["nu chto eshche?"] = "rbxassetid://133328523793428",
+    ["nikto ne smeet mne prikazyvat"] = "rbxassetid://113736005207071",
+    ["vot tak to luchshe"] = "rbxassetid://100302944137122",
+    ["xz"] = "rbxassetid://84763750617501",
+    ["stun"] = "rbxassetid://105951403871701",
 }
 
 local selectedSoundId = sounds["cs"] -- По умолчанию Gunshot
@@ -2081,14 +1878,12 @@ local function applyToCurrentTool()
         if tool then
             local handle = tool:FindFirstChild("Handle")
             if handle then
-                -- Для GunKill (kill sound)
                 local gunKill = handle:FindFirstChild("GunKill")
                 if gunKill and gunKill:IsA("Sound") then
                     gunKill.SoundId = selectedSoundId
                 else
                 end
                 
-                -- Для второго звука (Gunshot, mute на id=0 или пустой)
                 local gunShot = handle:FindFirstChild("Gunshot")
                 if gunShot and gunShot:IsA("Sound") then
                     gunShot.SoundId = ""  -- Мьют (rbxassetid://0 может не работать, лучше пустая строка)
@@ -2103,15 +1898,14 @@ local function setupCharacter(char)
     char.ChildAdded:Connect(function(child)
         if child:IsA("Tool") then
             spawn(function()
-                wait(0.2) -- Немного больше задержки для полной инициализации
+                wait(0.1) -- Немного больше задержки для полной инициализации
                 applyToCurrentTool()
             end)
         end
     end)
     
-    -- Применяем к текущему инструменту, если есть
     spawn(function()
-        wait(0.5)
+        wait(0.1)
         applyToCurrentTool()
     end)
 end
@@ -2122,9 +1916,8 @@ end
 
 player.CharacterAdded:Connect(setupCharacter)
 
--- Дропдаун для выбора звука (только для GunKill, Gunshot мутится всегда)
-localplayer_tab:AddDropdown("KillSound", {
-    Values = {"Headshot", "minecraft bow", "cs"},
+sounds_tab:AddDropdown("KillSound", {
+    Values = {"cs", "headshot", "minecraft bow", "nikto ne smeet mne prikazyvat", "nu chto eshche?", "vot tak to luchshe", "xz", "stun"},
     Default = 3,
     Multi = false,
     Text = "Kill Sound",
@@ -2134,7 +1927,27 @@ localplayer_tab:AddDropdown("KillSound", {
     end
 })
 
-localplayer_tab:AddDivider()
+sounds_tab:AddButton("Preview Kill Sound", function()
+    -- Удаляем старый превью звук, если есть
+    if player.Character then
+        local prev = player.Character:FindFirstChild("PreviewKillSound")
+        if prev and prev:IsA("Sound") then
+            prev:Stop()
+            prev:Destroy()
+        end
+        local s = Instance.new("Sound")
+        s.Name = "PreviewKillSound"
+        s.SoundId = selectedSoundId
+        s.Volume = 1
+        s.Parent = player.Character
+        s.PlayOnRemove = false
+        s:Play()
+        -- Очистить после проигрывания
+        s.Ended:Connect(function()
+            s:Destroy()
+        end)
+    end
+end)
 
 local animEnabled = false
 local animText = ""
@@ -2146,7 +1959,6 @@ localplayer_tab:AddToggle('animnick', {
     Callback = function(Value)
         animEnabled = Value
 
-        -- если выключили toggle — убить текущую анимацию
         if not Value and currentAnimThread then
             task.cancel(currentAnimThread)
             currentAnimThread = nil
@@ -2164,18 +1976,15 @@ localplayer_tab:AddInput('MyTextbox', {
     Callback = function(Value)
         animText = Value
 
-        -- если toggle выключен — не делать ничего
         if not animEnabled then return end
 
-        -- если старая анимация была — убиваем её
         if currentAnimThread then
             task.cancel(currentAnimThread)
             currentAnimThread = nil
         end
 
-        -- запускаем новую анимацию
         currentAnimThread = task.spawn(function()
-            local Players = game:GetService("Players")
+            -- reuse top-level Players
             local player = Players.LocalPlayer
             if not player then return end
 
@@ -2197,7 +2006,6 @@ localplayer_tab:AddInput('MyTextbox', {
             end
 
             while animEnabled do
-                -- эффект печати
                 for i = 1, #animText do
                     if not animEnabled then return end
                     nameLabel.Text = string.sub(animText, 1, i)
@@ -2206,7 +2014,6 @@ localplayer_tab:AddInput('MyTextbox', {
 
                 task.wait(1.2)
 
-                -- эффект стирания
                 for i = #animText, 1, -1 do
                     if not animEnabled then return end
                     nameLabel.Text = string.sub(animText, 1, i)
@@ -2219,11 +2026,6 @@ localplayer_tab:AddInput('MyTextbox', {
     end
 })
 
-
--- таббокс слева (обычно без названия при создании)
-local RightTabbox = OtherTab:AddRightTabbox()
-
--- сам таб внутри таббокса
 local OtherBox = RightTabbox:AddTab("Other")
 
 OtherBox:AddButton('Remove fog', function()
@@ -2322,21 +2124,17 @@ OtherBox:AddDropdown("SkySelector", {
     end
 })
 
--- сразу Night ставим
 ApplySky(SkyBoxes["Black"])
 
--- Сохраним дефолтные значения, чтобы было куда возвращать
 local L = game:GetService("Lighting")
 local Defaults = {
     Ambient = L.Ambient,
     OutdoorAmbient = L.OutdoorAmbient
 }
 
--- Тумблер + цвет
 OtherBox:AddToggle('AmbientToggle', { Text = 'Ambient override', Default = false })
     :AddColorPicker('AmbientColor', { Default = Color3.fromRGB(54, 57, 241) })
 
--- Реакция на ВКЛ/ВЫКЛ тумблера
 Toggles.AmbientToggle:OnChanged(function()
     if Toggles.AmbientToggle.Value then
         local c = Options.AmbientColor.Value
@@ -2348,7 +2146,6 @@ Toggles.AmbientToggle:OnChanged(function()
     end
 end)
 
--- Если меняем цвет — применяем его, но только когда тумблер включён
 Options.AmbientColor:OnChanged(function()
     if Toggles.AmbientToggle.Value then
         local c = Options.AmbientColor.Value
@@ -2360,13 +2157,11 @@ end)
 OtherBox:AddDivider()
 
 OtherBox:AddButton('Unlock camera', function()
-    local Players = game:GetService("Players")
+    -- reuse top-level Players
     local player = Players.LocalPlayer
 
-    -- Set maximum zoom distance to a large number
     player.CameraMaxZoomDistance = 9999
 
-    -- Set camera mode to Classic
     player.CameraMode = Enum.CameraMode.Classic
 end)
 
@@ -2391,11 +2186,10 @@ OtherBox:AddToggle('InvisiCamEnabled', {
 })
 
 local RunService = game:GetService("RunService")
-local Camera = workspace.CurrentCamera
+-- reuse top-level Camera
 
 local fovValue = 70 -- начальное значение FOV
 
--- Слайдер для изменения FOV
 OtherBox:AddSlider('FovSlider', {
     Text = 'Fov',
     Default = fovValue,
@@ -2407,7 +2201,6 @@ OtherBox:AddSlider('FovSlider', {
     end
 })
 
--- Loop для обновления FOV каждый кадр
 RunService.RenderStepped:Connect(function()
     if Camera then
         Camera.FieldOfView = fovValue
@@ -2424,8 +2217,7 @@ local MenuGroup = Tabs['Settings']:AddLeftGroupbox('Menu')
 
 MenuGroup:AddButton('Unload', function() Library:Unload() end)
 MenuGroup:AddButton('Rejoin', function()
-    -- Сервисы
-local Players = game:GetService("Players")
+-- reuse top-level Players
 local LocalPlayer = Players.LocalPlayer
 local MarketplaceService = game:GetService("MarketplaceService")
 local TeleportService = game:GetService("TeleportService")
