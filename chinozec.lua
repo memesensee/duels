@@ -524,73 +524,27 @@ local rage_left = rage:AddLeftTabbox()
 
 local players_tab = rage_left:AddTab("Players")
 
--- reuse top-level Players
--- reuse top-level UserInputService
--- reuse top-level RunService
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
 
-local AUTO_CLICK_DELAY = 0.001  -- Супер-спам кликов (миллисекунды)
-local AUTO_WIN_DELAY = 0.001    -- Авто-вин спам (еще быстрее, 1000 раз/сек)
-local MAX_TARGET_DIST = math.huge  -- Бесконечная дистанция для киллов через всю карту
-local TOOL_EQUIP_DELAY = 0.2   -- Задержка экипировки (НЕ ИСПОЛЬЗУЕТСЯ)
-local SLASH_SPAM_COUNT = 1     -- Количество вызовов kill за один тик на каждого (мгновенно, но не переспам)
-local ENEMY_CACHE_TIME = 0.1   -- Кэш врагов каждые 0.1 сек для оптимизации
+local AUTO_WIN_DELAY = 0.001
+local SLASH_SPAM_COUNT = 1
+local ENEMY_CACHE_TIME = 0.01
 
-local autoClickEnabled = false   -- Изначально ВЫКЛ, управляется тогглом
-local autoWinEnabled = false     -- Изначально ВЫКЛ, управляется тогглом
-local autoToolGrabEnabled = true -- ВКЛ для лупа поиска тула с kill
-local autoEquipFirstToolEnabled = false  -- ВЫКЛ! НИЧЕГО НЕ ЭКИПИРУЕТСЯ В РУКИ
+local autoClickEnabled = false
+local autoWinEnabled = false
 local killRemote = nil
 local enemyCache = {}
 local lastCacheUpdate = 0
-local clickConnection = nil  -- Для отключения Heartbeat
+local clickConnection = nil
+local winConnection = nil
 
 local function getKillRemote()
-    local tool = nil
-    for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-        if item:IsA("Tool") and item:FindFirstChild("kill") and item.kill:IsA("RemoteEvent") then
-            tool = item
-            break
-        end
-    end
-    if not tool and LocalPlayer.Character then
-        for _, item in pairs(LocalPlayer.Character:GetChildren()) do
-            if item:IsA("Tool") and item:FindFirstChild("kill") and item.kill:IsA("RemoteEvent") then
-                tool = item
-                break
-            end
-        end
-    end
-    if not tool then
-        for _, item in pairs(LocalPlayer.Backpack:GetChildren()) do
-            if item:IsA("Tool") and item:FindFirstChild("Slash") then
-                tool = item
-                break
-            end
-        end
-        if not tool and LocalPlayer.Character then
-            for _, item in pairs(LocalPlayer.Character:GetChildren()) do
-                if item:IsA("Tool") and item:FindFirstChild("Slash") then
-                    tool = item
-                    break
-                end
-            end
-        end
-    end
-    killRemote = tool and tool:FindFirstChild("kill") or tool and tool:FindFirstChild("Slash")
-    if killRemote then
-    end
-    return killRemote
-end
-
-local function getRunningGame(player)
-    for _, gameFolder in pairs(workspace:WaitForChild("RunningGames"):GetChildren()) do
-        if gameFolder.Name:match(tostring(player.UserId)) then
-            return gameFolder
-        end
-    end
-    return nil
+    killRemote = ReplicatedStorage:FindFirstChild("KnifeKill")
+    return killRemote and killRemote:IsA("RemoteEvent")
 end
 
 local function getAllEnemies()
@@ -629,23 +583,12 @@ local function performKillSpam()
     local totalFires = 0
     for _, target in pairs(enemies) do
         if totalFires >= 100 then break end
-        pcall(function()  -- Error handling
-            if killRemote.Name == "kill" then
-                for i = 1, SLASH_SPAM_COUNT do
-                    killRemote:FireServer(target)
-                    totalFires += 1
-                end
-            else
-                local direction = (target.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Unit
-                for i = 1, SLASH_SPAM_COUNT do
-                    killRemote:FireServer(target, direction)
-                    totalFires += 1
-                end
+        pcall(function()
+            for i = 1, SLASH_SPAM_COUNT do
+                killRemote:FireServer(target)
+                totalFires += 1
             end
         end)
-    end
-    if #enemies > 0 then
-        print("Killed " .. #enemies .. " enemies this tick")  -- Debug
     end
 end
 
@@ -658,9 +601,10 @@ local function startAutoClick()
     end
 end
 
-local winConnection
 local function startAutoWin()
-    if winConnection then winConnection:Disconnect() end
+    if winConnection then
+        task.cancel(winConnection)
+    end
     if autoWinEnabled then
         winConnection = task.spawn(function()
             while autoWinEnabled do
@@ -673,25 +617,16 @@ local function startAutoWin()
     end
 end
 
-task.spawn(function()
-    while true do
-        if autoToolGrabEnabled then
-            getKillRemote()
-        end
-        task.wait(0.5)  -- Проверяем каждые 0.5 секунды
-    end
-end)
-
 getKillRemote()
 
 players_tab:AddToggle('killall', { 
     Text = 'auto win', 
-    Default = false,  -- По умолчанию выкл
+    Default = false,  
     Callback = function(Value)
         autoWinEnabled = Value
-        autoClickEnabled = Value  -- Связываем с Heartbeat
-        startAutoClick()  -- Перезапускаем/отключаем Heartbeat
-        startAutoWin()    -- Перезапускаем/отключаем быстрый луп
+        autoClickEnabled = Value  
+        startAutoClick()  
+        startAutoWin()    
     end
 })
 
@@ -699,11 +634,9 @@ local visuals = Window:AddTab("Visuals")
 
 local visuals_right = visuals:AddLeftTabbox()
 
+local localplayer_tab = visuals_right:AddTab("LocalPlayer")
+
 local localplayer_tabb = visuals_right:AddTab("Enemy")
-
-local visuals_left = visuals:AddRightTabbox()
-
-local localplayer_tab = visuals_left:AddTab("LocalPlayer")
 
 -- reuse top-level Players
 local player = Players.LocalPlayer
